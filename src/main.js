@@ -13,15 +13,20 @@ const FINDER_RADII = [3, 2, 1]
 const PART_SIZE = 4
 
 const PART_RADIUS = 0.5
-// A corner with a long edge either side of it is the outside of a bend — the
-// elbow of an L or S part, or any corner of a 2x2. Those take a full module so
-// the turn keeps an even width; every other corner stays at PART_RADIUS.
+// On a part that bends, a convex corner with a long edge either side of it is the
+// outside of the turn — the elbow of an L or an S. Those take a full module so
+// the bend keeps an even width; every other corner stays at PART_RADIUS.
 const ELBOW_RADIUS = 1
 const LONG_EDGE = 2
 
 // Gap between neighbouring parts, in modules. Each part is inset by half of it
 // on every side, so two parts sharing an edge end up this far apart.
 const PART_GAP = 0.2
+
+// Diameter of a free-standing module, in modules. Nothing sits orthogonally
+// next to one, so instead of being inset like every other part it grows past its
+// own cell — the nearest dark module is a diagonal step away, which leaves room.
+const LONE_DOT_SIZE = 1.1
 
 const NEIGHBOURS = [[1, 0], [-1, 0], [0, 1], [0, -1]] // orthogonal only, no diagonals
 
@@ -53,6 +58,12 @@ function roundedRect(x, y, side, radius) {
 // A marker as nested rounded squares, each one module further in than the last.
 function marker(x, y, side, radii) {
   return radii.map((r, i) => roundedRect(x + i, y + i, side - 2 * i, r)).join('')
+}
+
+// A radius of half the side turns a rounded square into a circle.
+function loneDot([x, y]) {
+  const grown = (LONE_DOT_SIZE - 1) / 2
+  return roundedRect(x - grown, y - grown, LONE_DOT_SIZE, LONE_DOT_SIZE / 2)
 }
 
 function neighboursOf(k) {
@@ -217,6 +228,19 @@ function insetOutline(outline, by) {
 function roundedOutline(outline) {
   const n = outline.length
   const inset = insetOutline(outline, PART_GAP / 2)
+
+  // In y-down space a positive cross product is a clockwise turn, which on a
+  // clockwise outline means a convex corner.
+  const convexAt = outline.map((curr, i) => {
+    const incoming = direction(outline[(i - 1 + n) % n], curr)
+    const outgoing = direction(curr, outline[(i + 1) % n])
+    return incoming[0] * outgoing[1] - incoming[1] * outgoing[0] > 0
+  })
+  // No concave corner means the part is a solid rectangle with no bend to keep
+  // even, so nothing earns the elbow radius — that leaves a 2x2 a rounded square
+  // instead of swelling it into a circle.
+  const bends = convexAt.includes(false)
+
   let d = ''
 
   for (let i = 0; i < n; i++) {
@@ -225,11 +249,12 @@ function roundedOutline(outline) {
 
     const incoming = direction(outline[prev], outline[i])
     const outgoing = direction(outline[i], outline[next])
-    // In y-down space a positive cross product is a clockwise turn, which on a
-    // clockwise outline means a convex corner.
-    const convex = incoming[0] * outgoing[1] - incoming[1] * outgoing[0] > 0
+    const convex = convexAt[i]
     const elbow =
-      convex && span(outline[prev], outline[i]) >= LONG_EDGE && span(outline[i], outline[next]) >= LONG_EDGE
+      bends &&
+      convex &&
+      span(outline[prev], outline[i]) >= LONG_EDGE &&
+      span(outline[i], outline[next]) >= LONG_EDGE
 
     const curr = inset[i]
     const r = Math.min(
@@ -271,7 +296,12 @@ function toPathData({ data, size }) {
     }
   }
 
-  for (const part of splitIntoParts(cells)) d += roundedOutline(traceOutline(part))
+  const freeStanding = (module) => neighboursOf(key(module)).every((n) => !cells.has(n))
+
+  for (const part of splitIntoParts(cells)) {
+    const lone = part.length === 1 && freeStanding(part[0])
+    d += lone ? loneDot(part[0]) : roundedOutline(traceOutline(part))
+  }
 
   return d
 }
